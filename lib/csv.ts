@@ -83,6 +83,44 @@ function bookingId(value: string) {
   return value.trim().replace(/^"+|"+$/g, '')
 }
 
+
+const numericHeaders = [
+  'Avg VTAT', 'Avg CTAT', 'Cancelled Rides by Customer', 'Cancelled Rides by Driver',
+  'Incomplete Rides', 'Booking Value', 'Ride Distance', 'Driver Ratings', 'Customer Rating',
+]
+
+function headerError(record: string[]) {
+  const headers = record.map(value => value.trim())
+  if (headers.length !== csvHeaders.length || csvHeaders.some((header, index) => headers[index] !== header)) {
+    return 'Header atau urutan kolom CSV tidak sesuai format pemesanan yang didukung.'
+  }
+  return null
+}
+
+// Validasi satu baris data. Dipakai bersama oleh analisis (langkah 1) dan impor agar aturannya selalu sama.
+function parseBookingRecord(record: string[], rowNumber: number) {
+  if (record.length !== columns.length) {
+    throw new Error(`Jumlah kolom pada baris ${rowNumber} tidak sesuai header CSV.`)
+  }
+  const values = record.map(nullable)
+  const id = bookingId(record[headersIndex('Booking ID')])
+  const date = values[headersIndex('Date')]
+  const status = values[headersIndex('Booking Status')]
+  const timestamp = date ? Date.parse(`${date}T00:00:00.000Z`) : NaN
+  if (!id || !date || !status || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      !Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== date) {
+    throw new Error(`ID, tanggal, atau status pemesanan tidak valid pada baris ${rowNumber}.`)
+  }
+  for (const header of numericHeaders) {
+    const value = values[headersIndex(header)]
+    if (value !== null && !Number.isFinite(Number(value))) {
+      throw new Error(`Nilai ${header} tidak valid pada baris ${rowNumber}.`)
+    }
+  }
+  values[headersIndex('Booking ID')] = id
+  return { id, date, status, values }
+}
+
 export type ImportMode = 'replace' | 'append'
 
 export function importCsv(db: DatabaseSync, text: string, source: string, mode: ImportMode = 'replace') {
@@ -104,45 +142,19 @@ export function importCsv(db: DatabaseSync, text: string, source: string, mode: 
     parseRecords(text, record => {
       rowNumber++
       if (!headerSeen) {
-        const headers = record.map(value => value.trim())
-        if (headers.length !== csvHeaders.length || csvHeaders.some((header, index) => headers[index] !== header)) {
-          throw new Error('Header atau urutan kolom CSV tidak sesuai format pemesanan yang didukung.')
-        }
+        const problem = headerError(record)
+        if (problem) throw new Error(problem)
         headerSeen = true
         if (mode === 'replace') db.exec('DELETE FROM rides')
         return
       }
 
-      if (record.length !== columns.length) {
-        throw new Error(`Jumlah kolom pada baris ${rowNumber} tidak sesuai header CSV.`)
-      }
-
-      const values = record.map(nullable)
-      const id = bookingId(record[headersIndex('Booking ID')])
-      const date = values[headersIndex('Date')]
-      const status = values[headersIndex('Booking Status')]
-      const timestamp = date ? Date.parse(`${date}T00:00:00.000Z`) : NaN
-      if (!id || !date || !status || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-          !Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== date) {
-        throw new Error(`ID, tanggal, atau status pemesanan tidak valid pada baris ${rowNumber}.`)
-      }
-
-      const numericHeaders = [
-        'Avg VTAT', 'Avg CTAT', 'Cancelled Rides by Customer', 'Cancelled Rides by Driver',
-        'Incomplete Rides', 'Booking Value', 'Ride Distance', 'Driver Ratings', 'Customer Rating',
-      ]
-      for (const header of numericHeaders) {
-        const value = values[headersIndex(header)]
-        if (value !== null && !Number.isFinite(Number(value))) {
-          throw new Error(`Nilai ${header} tidak valid pada baris ${rowNumber}.`)
-        }
-      }
+      const { id, values } = parseBookingRecord(record, rowNumber)
 
       if (knownIds) {
         if (knownIds.has(id)) { skipped++; return }
         knownIds.add(id)
       }
-      values[headersIndex('Booking ID')] = id
       const ordered = databaseHeaders.map(header => values[headersIndex(header)])
       insert.run(...ordered)
       imported++
@@ -161,6 +173,97 @@ export function importCsv(db: DatabaseSync, text: string, source: string, mode: 
   } catch (error) {
     db.exec('ROLLBACK')
     throw error
+  }
+}
+
+export type AnalysisSample = {
+  booking_id: string; booking_date: string; booking_time: string | null; booking_status: string
+  customer_id: string | null; vehicle_type: string | null; pickup_location: string | null
+  drop_location: string | null; payment_method: string | null; booking_value: string | null
+  ride_distance: string | null; avg_vtat: string | null; avg_ctat: string | null
+  driver_rating: string | null; customer_rating: string | null; reason: string | null
+  in_database: boolean
+}
+
+const MAX_REPORTED_ERRORS = 8
+const MAX_SAMPLES = 12
+
+// Langkah 1 ETL: membaca & memeriksa CSV tanpa mengubah database sedikit pun.
+// Hasilnya dipakai untuk menentukan lanjut ke Timpa, Tambah (import), atau Input Manual.
+export function analyzeCsv(db: DatabaseSync, text: string) {
+  const existing = new Set((db.prepare('SELECT booking_id FROM rides').all() as { booking_id: string }[]).map(r => r.booking_id))
+  const seenInFile = new Set<string>()
+  const statusCounts: Record<string, number> = {}
+  const errors: { row: number; message: string }[] = []
+  const samples: AnalysisSample[] = []
+  let headerProblem: string | null = null
+  let headerSeen = false
+  let rowNumber = 0
+  let dataRows = 0
+  let validRows = 0
+  let invalidRows = 0
+  let duplicateInFile = 0
+  let alreadyInDatabase = 0
+  let minDate: string | null = null
+  let maxDate: string | null = null
+
+  const idx = (header: string) => headersIndex(header)
+  try {
+    parseRecords(text, record => {
+      rowNumber++
+      if (!headerSeen) {
+        headerSeen = true
+        headerProblem = headerError(record)
+        return
+      }
+      if (headerProblem) return
+      dataRows++
+      try {
+        const { id, date, status, values } = parseBookingRecord(record, rowNumber)
+        validRows++
+        statusCounts[status] = (statusCounts[status] ?? 0) + 1
+        if (minDate === null || date < minDate) minDate = date
+        if (maxDate === null || date > maxDate) maxDate = date
+        if (seenInFile.has(id)) duplicateInFile++
+        else {
+          seenInFile.add(id)
+          if (existing.has(id)) alreadyInDatabase++
+        }
+        if (samples.length < MAX_SAMPLES) {
+          const get = (header: string) => values[idx(header)] ?? null
+          samples.push({
+            booking_id: id, booking_date: date, booking_time: get('Time'), booking_status: status,
+            customer_id: get('Customer ID')?.replace(/^"+|"+$/g, '') ?? null, vehicle_type: get('Vehicle Type'),
+            pickup_location: get('Pickup Location'), drop_location: get('Drop Location'),
+            payment_method: get('Payment Method'), booking_value: get('Booking Value'),
+            ride_distance: get('Ride Distance'), avg_vtat: get('Avg VTAT'), avg_ctat: get('Avg CTAT'),
+            driver_rating: get('Driver Ratings'), customer_rating: get('Customer Rating'),
+            reason: get('Reason for cancelling by Customer') ?? get('Driver Cancellation Reason') ?? get('Incomplete Rides Reason'),
+            in_database: existing.has(id),
+          })
+        }
+      } catch (error) {
+        invalidRows++
+        if (errors.length < MAX_REPORTED_ERRORS) errors.push({ row: rowNumber, message: error instanceof Error ? error.message : 'Baris tidak valid.' })
+      }
+    })
+  } catch (error) {
+    headerProblem = error instanceof Error ? error.message : 'CSV tidak dapat dibaca.'
+  }
+
+  if (!headerSeen) headerProblem = 'CSV kosong atau tidak memiliki header.'
+  const uniqueInFile = seenInFile.size
+  const newRows = uniqueInFile - alreadyInDatabase
+  return {
+    headerOk: !headerProblem,
+    headerError: headerProblem,
+    dataRows, validRows, invalidRows, duplicateInFile, alreadyInDatabase, uniqueInFile,
+    // Perkiraan hasil tiap metode, supaya pengguna tahu dampaknya sebelum memilih.
+    newRows,
+    canReplace: !headerProblem && invalidRows === 0 && validRows > 0,
+    canAppend: !headerProblem && invalidRows === 0 && newRows > 0,
+    dateFrom: minDate, dateTo: maxDate,
+    statusCounts, errors, samples,
   }
 }
 

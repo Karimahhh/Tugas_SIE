@@ -250,6 +250,7 @@ export function getDashboardData(params: URLSearchParams) {
       bookingSeries: { labels: [], tips: [], values: [], subtitle: 'Belum ada data' },
       revenueSeries: { labels: [], tips: [], values: [], subtitle: 'Belum ada data' },
       latestDate: '', reasons: [], rows: [], rowCount: 0, totalRows, options: { vehicles: vehicleOptions, payments: paymentOptions },
+      extras: { peakHour: null, topPickup: null },
     }
   }
 
@@ -295,6 +296,22 @@ export function getDashboardData(params: URLSearchParams) {
     ) GROUP BY status, label ORDER BY value DESC
   `).all(...values, ...values) as DatabaseRow[]
   const reasons = reasonRows.map(row => ({ label: String(row.label), value: Number(row.value), status: String(row.status) }))
+  // Data tambahan untuk insight otomatis: jam tersibuk & titik jemput terbanyak pada filter aktif.
+  const hourRows = db.prepare(`
+    SELECT substr(booking_time, 1, 2) AS hour, COUNT(*) AS total FROM rides
+    WHERE ${where} AND booking_time IS NOT NULL AND length(booking_time) >= 2
+    GROUP BY hour ORDER BY total DESC, hour ASC
+  `).all(...values) as DatabaseRow[]
+  const timedTotal = hourRows.reduce((sum, row) => sum + Number(row.total ?? 0), 0)
+  const peakHour = hourRows.length && Number.isFinite(Number(hourRows[0].hour))
+    ? { hour: Number(hourRows[0].hour), count: Number(hourRows[0].total), share: timedTotal ? Number(hourRows[0].total) / timedTotal : 0 }
+    : null
+  const pickupRow = db.prepare(`
+    SELECT trim(pickup_location) AS label, COUNT(*) AS total FROM rides
+    WHERE ${where} AND pickup_location IS NOT NULL AND trim(pickup_location) != '' AND lower(trim(pickup_location)) != 'null'
+    GROUP BY label ORDER BY total DESC, label ASC LIMIT 1
+  `).get(...values) as DatabaseRow | undefined
+  const topPickup = pickupRow ? { label: String(pickupRow.label), count: Number(pickupRow.total) } : null
   const search = (params.get('search') ?? '').trim()
   const page = Math.max(1, Math.min(100000, Number(params.get('page')) || 1))
   const searchClause = search ? ' AND booking_id LIKE ?' : ''
@@ -322,6 +339,7 @@ export function getDashboardData(params: URLSearchParams) {
     agg, prev, aggAllStatus, aggAllVehicle, aggAllPayment,
     bookingSeries, revenueSeries, latestDate, reasons, rows: rows.map(formatRow), rowCount, totalRows,
     options: { vehicles: vehicleOptions, payments: paymentOptions },
+    extras: { peakHour, topPickup },
   }
 }
 

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Activity, ArrowDown, ArrowDownRight, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, BarChart3, CalendarDays, CarFront, Check, ChevronDown, CircleDollarSign, Clock3, Database, Eye, EyeOff, FileUp, Filter, Gauge, LayoutDashboard, ListTree, Lock, LogOut, Search, ShieldCheck, TrendingUp, Upload, Users, X } from 'lucide-react'
+import { Activity, ArrowDown, ArrowDownRight, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, BarChart3, CalendarDays, CarFront, Check, ChevronDown, CircleDollarSign, Clock3, Database, Eye, EyeOff, FileUp, Filter, Gauge, LayoutDashboard, Lightbulb, ListTree, Lock, LogOut, Search, ShieldCheck, TrendingUp, Upload, Users, X } from 'lucide-react'
 import {
   DEFAULT_FILTERS, MONTHS, RANGES, STATUSES, STATUS_COLORS,
   fmtCompact, fmtInt, fmtPct, fmtRp, fmtRpCompact, niceMax, trend,
@@ -9,6 +9,7 @@ import {
 } from '@/lib/data'
 
 import { EtlWorkspace } from '@/components/etl-workspace'
+import { buildInsights, buildRecommendation, type InsightInput } from '@/lib/insights'
 
 type Screen = 'LOGIN' | 'MAIN_MENU' | 'ETL_PAGE' | 'DASHBOARD'
 type SortKey = 'id' | 'ts' | 'vehicle' | 'status' | 'payment' | 'fare'
@@ -272,6 +273,9 @@ function Dashboard({ onBack, onLogout }: { onBack: () => void; onLogout: () => v
   const topVehicle = vehicleRates.reduce((a, b) => (b.rate > a.rate ? b : a), { v: '—', t: 0, c: 0, rate: 0 })
   const payTotal = aggAllPayment.payRev.reduce((s, n) => s + n, 0)
   const rangeBadge = filters.range
+  const insightInput: InsightInput = { agg, prev, aggAllVehicle, aggAllPayment, vehicles: payload?.options.vehicles ?? [], payments: payload?.options.payments ?? [], reasons, bookingSeries, range: filters.range, filterText }
+  const insights = payload ? buildInsights(insightInput) : []
+  const recommendation = payload ? buildRecommendation(insightInput) : null
 
   return (
     <div className="dashboard-shell" aria-busy={loading}>
@@ -331,6 +335,19 @@ function Dashboard({ onBack, onLogout }: { onBack: () => void; onLogout: () => v
               <Donut title="Status pemesanan" subtitle="Rincian berdasarkan hasil pemesanan" items={statusItems} centerLabel="pemesanan" selected={filters.status} onSelect={k => toggle('status', k)} />
               <TrendChart title="Volume pemesanan" series={bookingSeries} fmt={fmtCompact} fmtFull={n => `${fmtInt(n)} pemesanan`} badge={rangeBadge} />
             </div>
+            {insights.length > 0 && <section className="panel insights-panel" aria-label="Insight otomatis">
+              <div className="panel-heading"><div><h3><Lightbulb size={14} /> Insight otomatis</h3><p>Temuan utama dari data pada {filterText}</p></div><span className="tag">{insights.length} temuan</span></div>
+              <div className="insight-grid">
+                {insights.map(item => {
+                  const Icon = item.tone === 'good' ? Check : item.tone === 'warn' ? ArrowDownRight : Activity
+                  const body = <><span className={`insight-badge ${item.tone}`}><Icon size={15} /></span><div><strong>{item.title}</strong><p>{item.text}</p></div></>
+                  return item.tab
+                    ? <button key={item.id} className={`insight-card ${item.tone} clickable`} onClick={() => setTab(item.tab as Tab)} title={`Buka ${item.tab}`}>{body}</button>
+                    : <div key={item.id} className={`insight-card ${item.tone}`}>{body}</div>
+                })}
+              </div>
+              {recommendation && <p className="insight-reco"><Lightbulb size={13} /> {recommendation}</p>}
+            </section>}
             <div className="insight-strip"><span className="insight-icon"><Gauge size={17} /></span>
               <div><strong>{agg.lost[1] > 0 ? 'Peluang teridentifikasi' : 'Tidak ada peluang pada filter ini'}</strong>
                 <p>{agg.lost[1] > 0 ? <>Menurunkan pembatalan oleh pengemudi sebesar 10% dapat memulihkan sekitar <b>{fmtRp(agg.lost[1] * 0.1)}</b> pendapatan pada {filterText}.</> : <>Tidak ada pembatalan oleh pengemudi pada kombinasi filter ini. Ubah filter untuk melihat peluang pemulihan.</>}</p></div>

@@ -2,8 +2,6 @@
 
 # dependencies
 /node_modules
-/data/ncr_ride_bookings.csv
-/data/ncr_ride_bookings.sqlite*
 
 # next.js
 /.next/
@@ -20,6 +18,11 @@ yarn-error.log*
 
 # env files
 .env*
+!.env.example
+
+# local database
+/data/*.sqlite
+/data/*.sqlite-*
 
 # vercel
 .vercel

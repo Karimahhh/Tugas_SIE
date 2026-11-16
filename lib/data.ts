@@ -1,80 +1,74 @@
-export type BookingStatus =
-  | 'Completed'
-  | 'Cancelled by Driver'
-  | 'Cancelled by Customer'
-  | 'No Driver Found'
-  | 'Incomplete'
+export const STATUSES = [
+  'Selesai',
+  'Dibatalkan pengemudi',
+  'Dibatalkan pelanggan',
+  'Pengemudi tidak ditemukan',
+  'Perjalanan tidak selesai',
+] as const
+export type Status = (typeof STATUSES)[number]
 
-export type VehicleType =
-  | 'Auto'
-  | 'Bike'
-  | 'eBike'
-  | 'Go Mini'
-  | 'Go Sedan'
-  | 'Premier Sedan'
-  | 'Uber XL'
+export const STATUS_COLORS = ['#2563eb', '#f59e0b', '#0f9f8f', '#cbd5e1', '#8b5cf6']
+export const STATUS_TONES = ['completed', 'driver-cancelled', 'cancelled', 'no-driver', 'incomplete']
+export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']
+export const RANGES = ['30 hari terakhir', '7 hari terakhir', 'Tahun berjalan'] as const
 
-export type PaymentMethod = 'Cash' | 'UPI' | 'Credit Card' | 'Debit Card' | 'Uber Wallet'
+export type Vehicle = string
+export type Payment = string
+export type Range = (typeof RANGES)[number]
+export type Filters = { range: Range; vehicle: Vehicle | 'all'; status: Status | 'all'; payment: Payment | 'all' }
+export const DEFAULT_FILTERS: Filters = { range: '30 hari terakhir', vehicle: 'all', status: 'all', payment: 'all' }
 
-export interface Booking {
+export type Agg = {
+  total: number
+  completed: number
+  byStatus: number[]
+  byVehicle: Record<string, number[]>
+  payRev: number[]
+  revenue: number
+  lost: number[]
+  leak: number
+  rating: number
+  repeat: number
+  avgFare: number
+}
+
+export type Row = {
+  key: number
+  id: string
+  ts: number
   date: string
-  time: string
-  bookingId: string
-  bookingStatus: BookingStatus
-  customerId: string
-  vehicleType: VehicleType
-  pickupLocation: string
-  dropLocation: string
-  avgVTAT: number | null
-  avgCTAT: number | null
-  cancelledRidesByCustomer: number
-  reasonForCancellingByCustomer: string | null
-  cancelledRidesByDriver: number
-  driverCancellationReason: string | null
-  incompleteRides: number
-  incompleteRidesReason: string | null
-  bookingValue: number
-  rideDistance: number | null
-  driverRatings: number | null
-  customerRating: number | null
-  paymentMethod: PaymentMethod | null
+  vehicle: Vehicle
+  pickup: string
+  dropoff: string
+  status: Status | string
+  tone: string
+  payment: Payment
+  fare: number
 }
 
-export const BOOKING_STATUSES: BookingStatus[] = [
-  'Completed',
-  'Cancelled by Driver',
-  'Cancelled by Customer',
-  'No Driver Found',
-  'Incomplete',
-]
+const trim = (n: number, d = 1) => String(+n.toFixed(d)).replace('.', ',')
+export const fmtInt = (n: number) => Math.round(n).toLocaleString('id-ID')
+export const fmtPct = (x: number, d = 1) => `${(x * 100).toFixed(d).replace('.', ',')}%`
+export const fmtCompact = (n: number) => (n >= 1e6 ? `${trim(n / 1e6, 2)} jt` : n >= 1e3 ? `${trim(n / 1e3)} rb` : String(Math.round(n)))
+export const fmtRp = (n: number) =>
+  n >= 1e9 ? `Rp ${(n / 1e9).toFixed(2).replace('.', ',')} miliar` : n >= 1e6 ? `Rp ${(n / 1e6).toFixed(2).replace('.', ',')} jt` : n >= 1e3 ? `Rp ${trim(n / 1e3)} rb` : `Rp ${Math.round(n)}`
+export const fmtRpCompact = (n: number) => (n >= 1e9 ? `${trim(n / 1e9, 2)} mlr` : n >= 1e6 ? `${trim(n / 1e6)} jt` : n >= 1e3 ? `${trim(n / 1e3)} rb` : String(Math.round(n)))
 
-export const VEHICLE_TYPES: VehicleType[] = [
-  'Auto',
-  'Bike',
-  'eBike',
-  'Go Mini',
-  'Go Sedan',
-  'Premier Sedan',
-  'Uber XL',
-]
-
-export const PAYMENT_METHODS: PaymentMethod[] = ['Cash', 'UPI', 'Credit Card', 'Debit Card', 'Uber Wallet']
-
-export const MONTHS = [
-  '2024-01', '2024-02', '2024-03', '2024-04', '2024-05', '2024-06',
-  '2024-07', '2024-08', '2024-09', '2024-10', '2024-11', '2024-12',
-]
-
-const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']
-
-export function monthLabel(month: string) {
-  const [year, m] = month.split('-')
-  return `${MONTH_LABELS[Number(m) - 1]} ${year}`
+export function niceMax(v: number) {
+  if (v <= 0) return 1
+  const raw = v / 4
+  const p = Math.pow(10, Math.floor(Math.log10(raw)))
+  const f = raw / p
+  const step = ([1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].find(c => f <= c + 1e-9) ?? 10) * p
+  return step * 4
 }
 
-/** All filtered metrics now use the imported records directly, without sample scaling. */
-export const SCALE_FACTOR = 1
-
-export function isRevenue(booking: Booking) {
-  return booking.bookingStatus === 'Completed'
+export type Trend = { text: string; dir: 'up' | 'down' | 'flat'; good: boolean }
+export function trend(cur: number, prev: number | null | undefined, opt: { rate?: boolean; lowerIsBetter?: boolean } = {}): Trend | null {
+  if (prev == null || !isFinite(prev) || (!opt.rate && prev === 0)) return null
+  const diff = opt.rate ? (cur - prev) * 100 : ((cur - prev) / prev) * 100
+  const abs = Math.abs(diff)
+  const dir = abs < 0.05 ? 'flat' : diff > 0 ? 'up' : 'down'
+  const text = `${diff > 0.05 ? '+' : diff < -0.05 ? '−' : ''}${abs.toFixed(1).replace('.', ',')}${opt.rate ? ' poin' : '%'}`
+  return { text, dir, good: dir === 'flat' ? true : opt.lowerIsBetter ? diff < 0 : diff > 0 }
 }

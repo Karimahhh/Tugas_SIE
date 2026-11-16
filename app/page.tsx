@@ -1,5 +1,5 @@
-import { ExecutiveSummary } from '@/components/dashboard/executive-summary'
+import { OpsApp } from '@/components/ops-app'
 
 export default function Page() {
-  return <ExecutiveSummary />
+  return <OpsApp />
 }

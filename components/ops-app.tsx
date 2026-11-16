@@ -8,6 +8,8 @@ import {
   type Agg, type Filters, type Range, type Row, type Status, type Trend,
 } from '@/lib/data'
 
+import { EtlWorkspace } from '@/components/etl-workspace'
+
 type Screen = 'LOGIN' | 'MAIN_MENU' | 'ETL_PAGE' | 'DASHBOARD'
 type SortKey = 'id' | 'ts' | 'vehicle' | 'status' | 'payment' | 'fare'
 type Tab = 'Ringkasan Eksekutif' | 'Analisis Pembatalan' | 'Analitik Pendapatan & Pelanggan' | 'Mesin Analisis Skenario' | 'Drill Down' | 'Detail Pemesanan'
@@ -495,10 +497,7 @@ function Dashboard({ onBack, onLogout }: { onBack: () => void; onLogout: () => v
 
 export function OpsApp() {
  const [screen, setScreen] = useState<Screen>('LOGIN')
- const [file, setFile] = useState<File | null>(null)
  const [etlDone, setEtlDone] = useState(false)
- const [etlSummary, setEtlSummary] = useState('')
- const [dragging, setDragging] = useState(false)
  const [lockedNotice, setLockedNotice] = useState(false)
  const [showPw, setShowPw] = useState(false)
  const [forgot, setForgot] = useState(false)
@@ -507,7 +506,6 @@ export function OpsApp() {
  const [submitting, setSubmitting] = useState(false)
  const [summary, setSummary] = useState<{ agg: Agg; prev: Agg | null } | null>(null)
  const [latestDate, setLatestDate] = useState('')
- const inputRef = useRef<HTMLInputElement>(null)
  const loadSession = async () => {
    const response = await fetch('/api/auth/session')
    if (response.status === 401) return null
@@ -545,7 +543,7 @@ export function OpsApp() {
    }
  }
  const openDashboard = () => { if (etlDone) { setLockedNotice(false); setScreen('DASHBOARD') } else setLockedNotice(true) }
- const resetEtl = () => { setFile(null); setEtlSummary(''); setLockedNotice(false) }
+ const resetEtl = () => { setLockedNotice(false) }
  const handleLogout = async () => {
    await fetch('/api/auth/logout', { method: 'POST' })
    resetEtl()
@@ -554,32 +552,9 @@ export function OpsApp() {
    setUserMenu(false)
    setScreen('LOGIN')
  }
- const processFile = async (selected?: File) => {
-   const upload = selected || file
-   if (!upload) return
-   if (!upload.name.toLowerCase().endsWith('.csv') || upload.size === 0 || upload.size > 50 * 1024 * 1024) {
-     setEtlSummary('Berkas harus berupa CSV dengan ukuran maksimal 50 MB.')
-     return
-   }
-   setFile(upload)
-   setEtlSummary('Mengimpor data ke database...')
-   try {
-     const form = new FormData()
-     form.set('file', upload)
-     const response = await fetch('/api/etl/upload', { method: 'POST', body: form })
-     const result = await response.json()
-     if (!response.ok) throw new Error(result.error || 'Proses ETL gagal.')
-     const session = await loadSession()
-     if (!session) throw new Error('Sesi admin telah berakhir. Silakan masuk kembali.')
-     setEtlSummary(`${Number(result.rowCount).toLocaleString('id-ID')} baris berhasil disimpan ke database dari ${result.fileName}.`)
-     setEtlDone(true)
-   } catch (error) {
-     setEtlSummary(error instanceof Error ? error.message : 'Proses ETL gagal.')
-   }
- }
  const view = screen === 'DASHBOARD' && !etlDone ? 'MAIN_MENU' : screen
  if (view === 'LOGIN') return <main className="login-screen"><div className="login-side"><Brand light/><div className="login-message"><div className="login-overline">INTELIJEN OPERASIONAL</div><h1>Keputusan lebih baik<br/>berawal dari <em>kejelasan.</em></h1><p>Satu tampilan terpadu untuk operasional perjalanan, pengalaman pelanggan, dan kinerja pendapatan di seluruh NCR.</p><div className="login-stats"><div><strong>128 rb+</strong><span>Pemesanan per bulan</span></div><div><strong>6 tampilan</strong><span>Wawasan siap pakai</span></div></div></div><div className="login-side-bottom">PLATFORM ANALITIK INTERNAL <span>•</span> WILAYAH NCR</div></div><div className="login-form-side"><div className="login-mobile-brand"><Brand/></div><div className="login-form-wrap"><div className="welcome-mark"><Activity size={21}/></div><span className="eyebrow">SELAMAT DATANG KEMBALI</span><h2>Masuk ke ruang kerja Anda</h2><p>Akses DASHBOARD kinerja operasional Anda.</p><form onSubmit={handleLogin}><label>Nama pengguna<input name="username" type="text" placeholder="admin" defaultValue="admin" required autoComplete="username"/></label><label>Kata sandi<span className="pw-wrap"><input name="password" type={showPw?'text':'password'} placeholder="Masukkan kata sandi Anda" required autoComplete="current-password"/><button type="button" className="pw-toggle" aria-label={showPw?'Sembunyikan kata sandi':'Tampilkan kata sandi'} onClick={()=>setShowPw(v=>!v)}>{showPw?<EyeOff size={16}/>:<Eye size={16}/>}</button></span></label><div className="login-row"><label className="remember"><input type="checkbox"/> Ingat saya</label><button type="button" className="text-link" onClick={()=>setForgot(v=>!v)}>Lupa kata sandi?</button></div>{forgot&&<p className="login-notice">Hubungi administrator sistem untuk mengatur ulang kata sandi Anda.</p>}{authError&&<p className="login-notice" role="alert">{authError}</p>}<Button type="submit" className="full-button" disabled={submitting}>Masuk ke Sistem <ArrowRight size={16}/></Button></form><div className="login-secure"><ShieldCheck size={15}/> Akun awal: admin / admin123</div></div><div className="login-footer">© 2024 Operasional Uber NCR <span>Bantuan &amp; dukungan</span></div></div></main>
  if (view === 'MAIN_MENU') return <main className="menu-screen"><header className="menu-header"><Brand/><div className="menu-user-wrap"><button className="menu-user" aria-expanded={userMenu} onClick={()=>setUserMenu(v=>!v)}><span className="avatar">AN</span><span><strong>Tim analitik</strong><small>Administrator</small></span><ChevronDown size={15}/></button>{userMenu&&<div className="user-pop"><button onClick={handleLogout}><LogOut size={14}/> Keluar</button></div>}</div></header><section className="menu-hero"><div className="hero-copy"><span className="eyebrow"><i/> PLATFORM INTELIJEN OPERASIONAL</span><h1>Sistem Diagnostik Eksekutif Operasional &amp; Pendapatan UBER NCR</h1><p>Platform analitik terpadu untuk memahami performa perjalanan, menganalisis kebocoran pendapatan, dan mengidentifikasi peluang peningkatan operasional.</p><div className="hero-meta"><span><CalendarDays size={15}/> Laporan terbaru: {formatMonthID(latestDate)}</span><span><ShieldCheck size={15}/> Data diperbarui secara berkala</span></div></div><div className="hero-visual"><div className="visual-card"><div className="visual-head"><span>RINGKASAN KINERJA</span><span className="live"><i/> LANGSUNG</span></div><div className="snapshot-number"><strong>{fmtPct((summary?.agg.completed ?? 0)/(summary?.agg.total || 1),0)}</strong><span>Tingkat penyelesaian</span></div><div className="snapshot-bars">{[34,45,40,58,52,68,60,82,70,93,78,100].map((v,i)=><i key={i} data-tip={`${MONTHS[i]} 2024 · ${v}% dari puncak`} style={{height:`${v}%`}}/>)}</div><div className="snapshot-foot"><span>Penyelesaian pemesanan</span><span className="positive">{(trend((summary?.agg.completed ?? 0)/(summary?.agg.total || 1), summary?.prev && summary.prev.total ? summary.prev.completed/summary.prev.total : null, {rate:true})?.text ?? '?')} <TrendingUp size={13}/></span></div></div><div className="hero-float"><span className="float-icon"><CircleDollarSign size={16}/></span><div><small>Pendapatan berisiko</small><strong>{fmtRp((summary?.agg.leak ?? 0))}</strong></div><ArrowDownRight size={17}/></div></div></section><div className="menu-section-heading"><div><span className="eyebrow">RUANG KERJA ANDA</span><h2>Pilih untuk memulai</h2><p>Siapkan data Anda atau jelajahi wawasan terbaru.</p></div><span className="workspace-status"><i/> RUANG KERJA SIAP</span></div><section className="workspace-cards"><button className="workspace-card" onClick={()=>setScreen('ETL_PAGE')}><div className="workspace-icon blue-icon"><Database size={21}/></div><div className="workspace-card-top"><span className="eyebrow">MANAJEMEN DATA</span><ArrowRight size={17}/></div><h3>ETL</h3><p>Unggah dataset perjalanan dan jalankan proses validasi serta transformasi data.</p><div className="card-bottom"><span><FileUp size={15}/> Dataset CSV</span><span>Buka ETL <ArrowRight size={13}/></span></div></button><button className={`workspace-card ${etlDone?'':'locked'}`} aria-disabled={!etlDone} onClick={openDashboard}><div className="workspace-icon teal-icon"><LayoutDashboard size={21}/></div><div className="workspace-card-top"><span className="eyebrow">ANALITIK &amp; PELAPORAN</span><ArrowRight size={17}/></div><h3>DASHBOARD</h3><p>Jelajahi enam halaman analitik untuk mengungkap tren dan peluang pendapatan.</p><div className="card-bottom"><span>{etlDone?<><BarChart3 size={15}/> 6 tampilan wawasan</>:<><Lock size={15}/> Terkunci · unggah dataset dahulu</>}</span><span>{etlDone?'Jelajahi DASHBOARD':'Buka ETL dahulu'} <ArrowRight size={13}/></span></div></button></section>{lockedNotice&&!etlDone&&<div className="locked-notice" role="alert"><Lock size={16}/><span>DASHBOARD belum dapat dibuka. Unggah dataset CSV atau gunakan demo dataset melalui <b>ETL</b> terlebih dahulu.</span><button onClick={()=>setScreen('ETL_PAGE')}>Buka ETL <ArrowRight size={13}/></button></div>}{etlDone?<section className="menu-insights"><span className="insight-icon"><Gauge size={17}/></span><div><strong>Indikator operasional utama</strong><p><b>{fmtPct((summary?.agg.completed ?? 0)/(summary?.agg.total || 1),0)}</b> tingkat penyelesaian <i/> <b>{fmtPct((summary?.agg.byStatus[1] ?? 0)/(summary?.agg.total || 1),0)}</b> tingkat pembatalan pengemudi <i/> <b>{fmtRp((summary?.agg.leak ?? 0))}</b> estimasi kebocoran pendapatan</p></div><button onClick={openDashboard}>Lihat ringkasan eksekutif <ArrowRight size={14}/></button></section>:<section className="menu-insights"><span className="insight-icon"><Lock size={17}/></span><div><strong>Belum ada data</strong><p>Indikator operasional akan tampil setelah dataset diunggah melalui ETL.</p></div><button onClick={()=>setScreen('ETL_PAGE')}>Buka ETL <ArrowRight size={14}/></button></section>}<footer className="menu-footer"><span>SISTEM DIAGNOSTIK OPERASIONAL &amp; PENDAPATAN UBER NCR</span><span>HANYA UNTUK PENGGUNAAN INTERNAL <i/> OPERASIONAL NCR</span></footer></main>
- if (view === 'ETL_PAGE') return <main className="etl-screen"><header className="menu-header"><Brand/><Button variant="secondary" onClick={()=>setScreen('MAIN_MENU')}><ArrowLeft size={15}/> Kembali ke Menu Utama</Button></header><div className="etl-content"><div className="eyebrow">MANAJEMEN DATA <span>•</span> RUANG KERJA ETL</div><h1>Pemuatan dataset</h1><p className="etl-lead">Unggah dataset pemesanan untuk menyiapkan data analitik terbaru.</p><section className={`upload-panel ${dragging?'drop-active':''}`} onDragOver={e=>{e.preventDefault();setDragging(true)}} onDragLeave={()=>setDragging(false)} onDrop={e=>{e.preventDefault();setDragging(false);const f=e.dataTransfer.files[0];if(f){setFile(f);setEtlSummary('')}}}><input ref={inputRef} type="file" accept=".csv,text/csv" className="sr-only" onChange={e=>{const f=e.target.files?.[0];if(f){setFile(f);setEtlSummary('')}}}/><div className="upload-icon"><Upload size={21}/></div><h2>Unggah dataset Anda</h2><p>Seret dan lepas berkas CSV di sini, atau pilih dari perangkat Anda.</p><Button variant="secondary" onClick={()=>inputRef.current?.click()}><FileUp size={15}/> Pilih berkas</Button><span className="upload-hint">Format CSV · Ukuran berkas maksimum 50 MB</span>{file&&<div className="file-chip"><FileUp size={15}/><span><b>{file.name}</b><small>{(file.size/1024).toFixed(1)} KB</small></span><button aria-label="Hapus berkas" onClick={e=>{e.stopPropagation();setFile(null);setEtlSummary('')}}><X size={15}/></button></div>}<div className="expected-file"><Database size={15}/><span>Dataset aktif di database</span><b>ncr_ride_bookings.csv</b></div></section>{etlSummary&&<div className={`etl-result ${etlDone?'success':'error'}`}><span>{etlDone?<Check size={17}/>:<X size={17}/>}</span><div><b>{etlDone?'Proses ETL selesai':'Perhatian'}</b><p>{etlSummary}</p></div></div>}<div className="etl-actions"><Button onClick={()=>processFile()} disabled={!file}><Activity size={16}/> Jalankan Proses ETL</Button><Button variant="secondary" onClick={()=>{void loadSession().then(result=>{if(result){setEtlDone(result.rowCount>0);setEtlSummary(`${result.rowCount.toLocaleString('id-ID')} baris tersedia di database.`)}})}}><Database size={16}/> Gunakan Database Aktif</Button></div><section className="etl-note"><ShieldCheck size={17}/><div><b>Data Anda diproses dengan aman</b><p>Berkas divalidasi di server dan menggantikan dataset aktif secara atomik. Data disimpan permanen ke database SQLite lokal.</p></div></section></div><footer className="etl-footer">SISTEM DIAGNOSTIK OPERASIONAL &amp; PENDAPATAN UBER NCR <span>HANYA UNTUK PENGGUNAAN INTERNAL</span></footer></main>
+ if (view === 'ETL_PAGE') return <main className="etl-screen"><header className="menu-header"><Brand/><Button variant="secondary" onClick={()=>setScreen('MAIN_MENU')}><ArrowLeft size={15}/> Kembali ke Menu Utama</Button></header><EtlWorkspace onChanged={async()=>{ if(!await loadSession()) throw new Error('Sesi admin telah berakhir. Silakan masuk kembali.') }}/><footer className="etl-footer">SISTEM DIAGNOSTIK OPERASIONAL &amp; PENDAPATAN UBER NCR <span>HANYA UNTUK PENGGUNAAN INTERNAL</span></footer></main>
  return <Dashboard onBack={()=>setScreen('MAIN_MENU')} onLogout={handleLogout}/>
 }

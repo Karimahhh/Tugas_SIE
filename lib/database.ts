@@ -1,10 +1,31 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { importCsv } from './csv'
 
-const globalDatabase = globalThis as typeof globalThis & { ncrDatabase?: DatabaseSync }
+const globalDatabase = globalThis as typeof globalThis & {
+  ncrDatabase?: DatabaseSync
+  ncrBundledSeedCleanupComplete?: boolean
+}
+
+function removeUnusedBundledSeed(db: DatabaseSync) {
+  const seed = db.prepare("SELECT row_count FROM dataset_imports WHERE source = 'initial-csv'").get() as
+    { row_count: number } | undefined
+  if (!seed) return
+
+  const importCount = Number(db.prepare('SELECT COUNT(*) AS count FROM dataset_imports').get()?.count ?? 0)
+  const rowCount = Number(db.prepare('SELECT COUNT(*) AS count FROM rides').get()?.count ?? 0)
+  if (importCount !== 1 || rowCount !== seed.row_count) return
+
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec('DELETE FROM rides; DELETE FROM dataset_imports; DELETE FROM metadata;')
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
 
 function createDatabase() {
   const file = join(process.cwd(), 'data', 'uber-ncr.sqlite')
@@ -57,7 +78,6 @@ function createDatabase() {
     );
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `)
-
   const username = process.env.ADMIN_USERNAME || 'admin'
   const password = process.env.ADMIN_PASSWORD || 'admin123'
   const admin = db.prepare('SELECT username, salt, password_hash FROM admins WHERE id = 1').get() as
@@ -79,16 +99,14 @@ function createDatabase() {
     }
   }
 
-  const rowCount = Number(db.prepare('SELECT COUNT(*) AS count FROM rides').get()?.count ?? 0)
-  if (rowCount === 0) {
-    const seedPath = join(process.cwd(), 'data', 'ncr_ride_bookings.csv')
-    if (existsSync(seedPath)) importCsv(db, readFileSync(seedPath, 'utf8'), 'initial-csv')
-  }
-
   return db
 }
 
 export function getDatabase() {
   globalDatabase.ncrDatabase ??= createDatabase()
+  if (!globalDatabase.ncrBundledSeedCleanupComplete) {
+    removeUnusedBundledSeed(globalDatabase.ncrDatabase)
+    globalDatabase.ncrBundledSeedCleanupComplete = true
+  }
   return globalDatabase.ncrDatabase
 }

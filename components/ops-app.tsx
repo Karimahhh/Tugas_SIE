@@ -9,6 +9,7 @@ import {
 } from '@/lib/data'
 
 import { EtlWorkspace } from '@/components/etl-workspace'
+import { useToast } from '@/components/ui/toast'
 import { buildInsights, buildRecommendation, type InsightInput } from '@/lib/insights'
 
 type Screen = 'LOGIN' | 'MAIN_MENU' | 'ETL_PAGE' | 'DASHBOARD'
@@ -153,6 +154,7 @@ function TrendChart({ title, series, fmt, fmtFull, badge }: { title: string; ser
 }
 
 function Dashboard({ onBack, onLogout }: { onBack: () => void; onLogout: () => void }) {
+  const notify = useToast()
   const [tab, setTab] = useState<Tab>(tabs[0])
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
   const [search, setSearch] = useState('')
@@ -190,11 +192,15 @@ function Dashboard({ onBack, onLogout }: { onBack: () => void; onLogout: () => v
       })
       .then(result => { setPayload(result); setDataError('') })
       .catch(error => {
-        if (!controller.signal.aborted) setDataError(error instanceof Error ? error.message : 'Data DASHBOARD gagal dimuat.')
+        if (!controller.signal.aborted) {
+          const message = error instanceof Error ? error.message : 'Data DASHBOARD gagal dimuat.'
+          setDataError(message)
+          notify({ kind: 'error', title: 'DASHBOARD gagal dimuat', text: message })
+        }
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
-  }, [filters, search, page, sort])
+  }, [filters, search, page, sort, notify])
   useEffect(() => {
     if (tab !== 'Drill Down') return
     const controller = new AbortController()
@@ -218,11 +224,15 @@ function Dashboard({ onBack, onLogout }: { onBack: () => void; onLogout: () => v
       })
       .then(result => { setDrillPayload(result); setDrillError('') })
       .catch(error => {
-        if (!controller.signal.aborted) setDrillError(error instanceof Error ? error.message : 'Data drill down gagal dimuat.')
+        if (!controller.signal.aborted) {
+          const message = error instanceof Error ? error.message : 'Data drill down gagal dimuat.'
+          setDrillError(message)
+          notify({ kind: 'error', title: 'Rincian gagal dimuat', text: message })
+        }
       })
       .finally(() => { if (!controller.signal.aborted) setDrillLoading(false) })
     return () => controller.abort()
-  }, [tab, filters, drillPath, drillPage])
+  }, [tab, filters, drillPath, drillPage, notify])
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setTab('Detail Pemesanan'); setTimeout(() => searchRef.current?.focus(), 60) } }
     window.addEventListener('keydown', onKey)
@@ -513,16 +523,21 @@ function Dashboard({ onBack, onLogout }: { onBack: () => void; onLogout: () => v
 }
 
 export function OpsApp() {
+ const notify = useToast()
  const [screen, setScreen] = useState<Screen>('LOGIN')
  const [etlDone, setEtlDone] = useState(false)
  const [lockedNotice, setLockedNotice] = useState(false)
  const [showPw, setShowPw] = useState(false)
  const [forgot, setForgot] = useState(false)
  const [userMenu, setUserMenu] = useState(false)
- const [authError, setAuthError] = useState('')
+ const [authError, setAuthErrorState] = useState('')
  const [submitting, setSubmitting] = useState(false)
  const [summary, setSummary] = useState<{ agg: Agg; prev: Agg | null } | null>(null)
  const [latestDate, setLatestDate] = useState('')
+ const setAuthError = (message: string) => {
+   setAuthErrorState(message)
+   if (message) notify({ kind: 'error', title: 'Validasi login', text: message })
+ }
  const loadSession = async () => {
    const response = await fetch('/api/auth/session')
    if (response.status === 401) return null
@@ -540,10 +555,11 @@ export function OpsApp() {
  }, [])
  const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
    event.preventDefault()
+   const loginForm = event.currentTarget
    setSubmitting(true)
    setAuthError('')
    try {
-     const form = new FormData(event.currentTarget)
+     const form = new FormData(loginForm)
      const response = await fetch('/api/auth/login', {
        method: 'POST', headers: { 'Content-Type': 'application/json' },
        body: JSON.stringify({ username: form.get('username'), password: form.get('password') }),
@@ -559,7 +575,13 @@ export function OpsApp() {
      setSubmitting(false)
    }
  }
- const openDashboard = () => { if (etlDone) { setLockedNotice(false); setScreen('DASHBOARD') } else setLockedNotice(true) }
+ const openDashboard = () => {
+   if (etlDone) { setLockedNotice(false); setScreen('DASHBOARD') }
+   else {
+     setLockedNotice(true)
+     notify({ kind: 'error', title: 'DASHBOARD belum tersedia', text: 'Unggah dan simpan dataset melalui ETL terlebih dahulu.' })
+   }
+ }
  const resetEtl = () => { setLockedNotice(false) }
  const handleLogout = async () => {
    await fetch('/api/auth/logout', { method: 'POST' })

@@ -135,10 +135,12 @@ export function importCsv(db: DatabaseSync, text: string, source: string, mode: 
 
   db.exec('BEGIN IMMEDIATE')
   try {
-    // Mode tambah: Booking ID yang sudah ada (di database maupun di berkas itu sendiri) dilewati, bukan digandakan.
-    const knownIds = mode === 'append'
-      ? new Set((db.prepare('SELECT booking_id FROM rides').all() as { booking_id: string }[]).map(r => r.booking_id))
-      : null
+    // Abaikan Booking ID yang sudah tersimpan atau berulang di berkas yang sama.
+    const knownIds = new Set(
+      mode === 'append'
+        ? (db.prepare('SELECT booking_id FROM rides').all() as { booking_id: string }[]).map(r => r.booking_id)
+        : [],
+    )
     parseRecords(text, record => {
       rowNumber++
       if (!headerSeen) {
@@ -151,10 +153,8 @@ export function importCsv(db: DatabaseSync, text: string, source: string, mode: 
 
       const { id, values } = parseBookingRecord(record, rowNumber)
 
-      if (knownIds) {
-        if (knownIds.has(id)) { skipped++; return }
-        knownIds.add(id)
-      }
+      if (knownIds.has(id)) { skipped++; return }
+      knownIds.add(id)
       const ordered = databaseHeaders.map(header => values[headersIndex(header)])
       insert.run(...ordered)
       imported++
@@ -280,6 +280,40 @@ export function refreshMetadata(db: DatabaseSync) {
   db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('row_count', ?)").run(String(totalRows))
   db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('latest_date', ?)").run(latestDate)
   return { totalRows, latestDate }
+}
+
+export function clearDataset(db: DatabaseSync) {
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const deletedRows = Number(db.prepare('SELECT COUNT(*) AS total FROM rides').get()?.total ?? 0)
+    db.exec('DELETE FROM rides; DELETE FROM dataset_imports; DELETE FROM metadata;')
+    const { totalRows, latestDate } = refreshMetadata(db)
+    db.exec('COMMIT')
+    return { deletedRows, totalRows, latestDate }
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+export function deleteSelectedRides(db: DatabaseSync, rideIds: number[]) {
+  if (rideIds.length === 0 || rideIds.length > 1000 ||
+      rideIds.some(id => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new Error('Daftar pemesanan yang dipilih tidak valid.')
+  }
+
+  const ids = [...new Set(rideIds)]
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const placeholders = ids.map(() => '?').join(', ')
+    const deletedRows = Number(db.prepare(`DELETE FROM rides WHERE ride_id IN (${placeholders})`).run(...ids).changes)
+    const { totalRows, latestDate } = refreshMetadata(db)
+    db.exec('COMMIT')
+    return { deletedRows, totalRows, latestDate }
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
 }
 
 export const BOOKING_STATUSES = [

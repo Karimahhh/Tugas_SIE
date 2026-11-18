@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, Database, FileUp, ListTree, Plus, Search, Upload, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, Database, FileUp, ListTree, Plus, Search, Trash2, Upload, X } from 'lucide-react'
+import { useToast } from '@/components/ui/toast'
 
 function Button({ children, onClick, variant = 'primary', type = 'button', disabled = false }: {
-  children: React.ReactNode; onClick?: () => void; variant?: 'primary' | 'secondary'; type?: 'button' | 'submit'; disabled?: boolean
+  children: React.ReactNode; onClick?: () => void; variant?: 'primary' | 'secondary' | 'danger'; type?: 'button' | 'submit'; disabled?: boolean
 }) {
   return <button type={type} onClick={onClick} disabled={disabled} className={`button button-${variant}`}>{children}</button>
 }
@@ -60,7 +61,7 @@ type Preview = { rows: PreviewRow[]; total: number; totalAll: number; page: numb
 const METHODS: { id: Method; title: string; desc: string; icon: typeof Upload }[] = [
   { id: 'replace', title: 'Timpa Dataset', desc: 'Ganti seluruh dataset lama dengan CSV yang baru.', icon: Upload },
   { id: 'append', title: 'Tambah Data (Import)', desc: 'Tambahkan baris dari CSV ke dataset yang sudah ada.', icon: Plus },
-  { id: 'manual', title: 'Input Manual', desc: 'Isi satu data pemesanan lewat form.', icon: ListTree },
+  { id: 'manual', title: 'Input Manual', desc: 'Isi satu data pemesanan tanpa perlu mengunggah CSV.', icon: ListTree },
 ]
 
 const STATUS_OPTIONS = [
@@ -98,21 +99,24 @@ const fmt = (value: string | number | null, digits?: number) =>
       : String(value)
 const num = (n: number) => n.toLocaleString('id-ID')
 const MAX_BYTES = 50 * 1024 * 1024
+const MAX_SELECTED_ROWS = 1000
 
 export function EtlWorkspace({ onChanged, onOpenDashboard }: {
   onChanged: () => Promise<void>; onOpenDashboard: () => void
 }) {
+  const notify = useToast()
+  const setNotice = (notice: Notice) => { if (notice) notify(notice) }
   const [method, setMethod] = useState<Method | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [notice, setNotice] = useState<Notice>(null)
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [sampleKey, setSampleKey] = useState('')
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewError, setPreviewError] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [page, setPage] = useState(1)
   const [order, setOrder] = useState<'asc' | 'desc'>('asc')
   const [searchInput, setSearchInput] = useState('')
@@ -141,11 +145,18 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
     return () => controller.abort()
   }, [page, order, query, tick])
 
-  const refreshAfterChange = async (newestFirst: boolean) => {
-    await onChanged()
-    setSearchInput(''); setQuery(''); setPage(1)
-    setOrder(newestFirst ? 'desc' : 'asc')
+  const refreshAfterChange = async (newestFirst: boolean, preserveView = false) => {
+    if (!preserveView) {
+      setSearchInput(''); setQuery(''); setPage(1)
+      setOrder(newestFirst ? 'desc' : 'asc')
+    }
     setTick(value => value + 1)
+    try {
+      await onChanged()
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Ringkasan sesi gagal diperbarui.'
+    }
   }
 
   const dbRows = preview?.totalAll ?? 0
@@ -153,7 +164,7 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
   // LANGKAH 1: pilih berkas -> langsung dianalisis di server (database belum disentuh).
   const chooseFile = async (selected: File | undefined) => {
     if (!selected) return
-    setNotice(null); setAnalysis(null); setMethod(null); setSampleKey('')
+    setNotice(null); setAnalysis(null); setSampleKey('')
     if (!selected.name.toLowerCase().endsWith('.csv') || selected.size === 0 || selected.size > MAX_BYTES) {
       setFile(null)
       setNotice({ kind: 'error', title: 'Perhatian', text: 'Berkas harus berupa CSV dengan ukuran maksimal 50 MB.' })
@@ -170,6 +181,14 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
       setAnalysis(result)
       if (!result.headerOk) {
         setNotice({ kind: 'error', title: 'Format berkas tidak sesuai', text: result.headerError ?? 'Header CSV tidak dikenali.' })
+      } else if (result.dataRows === 0) {
+        setNotice({ kind: 'error', title: 'CSV belum memiliki data', text: 'Tambahkan minimal satu baris pemesanan setelah header.' })
+      } else if (result.invalidRows > 0) {
+        setNotice({
+          kind: 'error',
+          title: 'Validasi CSV menemukan baris bermasalah',
+          text: `${num(result.invalidRows)} baris tidak valid. Rincian kesalahan ditampilkan pada hasil pemeriksaan berkas.`,
+        })
       }
     } catch (error) {
       if (run !== analyzeRun.current) return
@@ -186,6 +205,10 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
 
   const pickMethod = (next: Method) => {
     setMethod(next); setNotice(null)
+    if (next !== 'manual' && !file) {
+      setNotice({ kind: 'info', title: 'Pilih dataset CSV', text: 'Tambah Data dan Timpa Dataset memerlukan berkas CSV baru.' })
+      inputRef.current?.click()
+    }
     requestAnimationFrame(() => stepTwoRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }))
   }
 
@@ -199,12 +222,12 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
   const saveMode = method === 'replace' || method === 'append' ? method : defaultSaveMode
 
   const disabledReason = (id: Method): string | null => {
-    if (!file) return 'Unggah dataset dahulu'
     if (analyzing) return 'Sedang dianalisis…'
+    if (id === 'manual') return null
+    if (!file) return null
     if (!analysis) return 'Berkas belum dapat dibaca'
     if (!analysis.headerOk) return 'Format berkas tidak sesuai'
     if (analysis.dataRows === 0) return 'CSV belum memiliki baris data'
-    if (id === 'manual') return null
     if (analysis.invalidRows > 0) return `${num(analysis.invalidRows)} baris tidak valid`
     if (id === 'append' && !analysis.canAppend) return 'Tidak ada baris baru'
     if (id === 'replace' && !analysis.canReplace) return 'Tidak ada baris valid'
@@ -215,7 +238,7 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
     const importMode = requestedMode ?? (method === 'replace' || method === 'append' ? method : null)
     if (!file || !analysis || busy || !importMode) return
     if (importMode === 'replace' && dbRows > 0) {
-      const ok = window.confirm(`Seluruh dataset lama (${num(dbRows)} baris) akan dihapus dan diganti dengan ${num(analysis.dataRows)} baris dari "${file.name}". Lanjutkan?`)
+      const ok = window.confirm(`Seluruh dataset lama (${num(dbRows)} baris) akan dihapus dan diganti dengan hingga ${num(analysis.uniqueInFile)} baris unik dari "${file.name}". Lanjutkan?`)
       if (!ok) return
     }
     setBusy(true)
@@ -225,17 +248,109 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
       body.set('file', file)
       body.set('mode', importMode)
       const result = await api('/api/etl/upload', { method: 'POST', body })
-      await refreshAfterChange(importMode === 'append')
+      const refreshError = await refreshAfterChange(importMode === 'append')
       const total = Number(result.totalRows).toLocaleString('id-ID')
       const added = Number(result.rowCount).toLocaleString('id-ID')
       const skipped = Number(result.skipped)
-      setNotice(importMode === 'replace'
-        ? { kind: 'success', title: 'Dataset berhasil ditimpa', text: `${added} baris dari ${result.fileName} kini menggantikan dataset lama.` }
-        : { kind: 'success', title: 'Data berhasil ditambahkan', text: `${added} baris baru ditambahkan dari ${result.fileName}.${skipped ? ` ${skipped.toLocaleString('id-ID')} baris dilewati karena Booking ID sudah ada.` : ''} Total data sekarang ${total} baris.` })
+      const importMessage = importMode === 'replace'
+        ? `${added} baris dari ${result.fileName} kini menggantikan dataset lama.${skipped ? ` ${skipped.toLocaleString('id-ID')} baris duplikat dalam CSV dilewati.` : ''}`
+        : `${added} baris baru ditambahkan dari ${result.fileName}.${skipped ? ` ${skipped.toLocaleString('id-ID')} baris dilewati karena Booking ID sudah ada.` : ''} Total data sekarang ${total} baris.`
+      setNotice(refreshError
+        ? { kind: 'error', title: 'Dataset tersimpan, tampilan belum diperbarui', text: `${importMessage} Namun sesi gagal diperbarui: ${refreshError}` }
+        : { kind: 'success', title: importMode === 'replace' ? 'Dataset berhasil ditimpa' : 'Data berhasil ditambahkan', text: importMessage })
+      setSelectedIds(new Set())
       setFile(null); setAnalysis(null); setMethod(null)
-      if (openDashboard) onOpenDashboard()
+      if (openDashboard && !refreshError) onOpenDashboard()
     } catch (error) {
       setNotice({ kind: 'error', title: 'Proses ETL gagal', text: error instanceof Error ? error.message : 'Proses ETL gagal.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const clearDatabase = async () => {
+    if (busy || analyzing || dbRows === 0) return
+    const confirmed = window.confirm(
+      `Hapus seluruh dataset (${num(dbRows)} baris) dan riwayat impor dari database? Akun admin tidak akan dihapus.`,
+    )
+    if (!confirmed) return
+
+    setBusy(true)
+    setNotice({ kind: 'info', title: 'Menghapus dataset', text: 'Menghapus data dan riwayat impor dari database...' })
+    try {
+      const result = await api('/api/etl/clear', { method: 'POST' })
+      analyzeRun.current++
+      setFile(null); setAnalysis(null); setAnalyzing(false); setMethod(null); setSampleKey('')
+      setForm(EMPTY_FORM)
+      setSelectedIds(new Set())
+      const refreshError = await refreshAfterChange(false)
+      const clearedRows = Number(result.deletedRows).toLocaleString('id-ID')
+      setNotice(refreshError
+        ? { kind: 'error', title: 'Dataset terhapus, tampilan belum diperbarui', text: `${clearedRows} baris berhasil dihapus. Namun sesi gagal diperbarui: ${refreshError}` }
+        : { kind: 'success', title: 'Dataset berhasil dihapus', text: `${clearedRows} baris dan riwayat impor telah dihapus. Akun admin tetap tersimpan.` })
+    } catch (error) {
+      setNotice({ kind: 'error', title: 'Dataset belum terhapus', text: error instanceof Error ? error.message : 'Dataset gagal dihapus.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleSelectedRow = (id: number) => {
+    if (!selectedIds.has(id) && selectedIds.size >= MAX_SELECTED_ROWS) {
+      setNotice({ kind: 'error', title: 'Batas pilihan tercapai', text: `Pilih maksimal ${num(MAX_SELECTED_ROWS)} baris sekaligus.` })
+      return
+    }
+    setSelectedIds(current => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleCurrentPage = () => {
+    const ids = preview?.rows.map(row => row.ride_id) ?? []
+    if (!ids.length) return
+    const allSelected = ids.every(id => selectedIds.has(id))
+    if (!allSelected && new Set([...selectedIds, ...ids]).size > MAX_SELECTED_ROWS) {
+      setNotice({ kind: 'error', title: 'Batas pilihan tercapai', text: `Pilih maksimal ${num(MAX_SELECTED_ROWS)} baris sekaligus.` })
+      return
+    }
+    setSelectedIds(current => {
+      const next = new Set(current)
+      ids.forEach(id => allSelected ? next.delete(id) : next.add(id))
+      return next
+    })
+  }
+
+  const deleteSelectedRows = async () => {
+    if (busy || selectedIds.size === 0) return
+    const ids = [...selectedIds]
+    if (!window.confirm(`Hapus ${num(ids.length)} baris yang dipilih saja? Baris lain dan riwayat impor tidak akan dihapus.`)) return
+
+    const selected = new Set(ids)
+    const deletedFromCurrentPage = preview?.rows.filter(row => selected.has(row.ride_id)).length ?? 0
+    const pageSize = preview?.pageSize ?? 15
+    const remainingFilteredRows = Math.max(0, (preview?.total ?? 0) - deletedFromCurrentPage)
+    const nextPage = Math.max(1, Math.min(page, Math.ceil(remainingFilteredRows / pageSize) || 1))
+
+    setBusy(true)
+    setNotice({ kind: 'info', title: 'Menghapus baris terpilih', text: 'Menghapus hanya data yang Anda pilih...' })
+    try {
+      const result = await api('/api/etl/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rideIds: ids }),
+      })
+      setSelectedIds(new Set())
+      setPage(nextPage)
+      const refreshError = await refreshAfterChange(order === 'desc', true)
+      const deletedRows = Number(result.deletedRows).toLocaleString('id-ID')
+      setNotice(refreshError
+        ? { kind: 'error', title: 'Baris terhapus, tampilan belum diperbarui', text: `${deletedRows} baris terpilih berhasil dihapus. Namun sesi gagal diperbarui: ${refreshError}` }
+        : { kind: 'success', title: 'Baris terpilih berhasil dihapus', text: `${deletedRows} baris dihapus. Baris lainnya tetap tersimpan.` })
+    } catch (error) {
+      setNotice({ kind: 'error', title: 'Baris belum terhapus', text: error instanceof Error ? error.message : 'Baris terpilih gagal dihapus.' })
     } finally {
       setBusy(false)
     }
@@ -260,25 +375,31 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
     setNotice(null)
   }
 
-  const submitManual = async (event: React.FormEvent) => {
+  const submitManual = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy) return
-    if (!file || !analysis?.headerOk || analysis.dataRows === 0) {
-      setNotice({ kind: 'error', title: 'Unggah dataset dahulu', text: 'Pilih dan periksa berkas CSV sebelum menyimpan data manual.' })
+    const manualForm = event.currentTarget
+    if (!manualForm.checkValidity()) {
+      const invalid = manualForm.querySelector(':invalid')
+      const message = invalid instanceof HTMLInputElement || invalid instanceof HTMLSelectElement
+        ? invalid.validationMessage
+        : 'Periksa kembali kolom yang wajib diisi.'
+      setNotice({ kind: 'error', title: 'Periksa data pemesanan', text: message })
       return
     }
     setBusy(true)
     setNotice(null)
     try {
       const body = new FormData()
-      body.set('file', file)
       body.set('data', JSON.stringify(form))
       const result = await api('/api/etl/manual', {
         method: 'POST', body,
       })
-      await refreshAfterChange(true)
+      const refreshError = await refreshAfterChange(true)
       setForm({ ...EMPTY_FORM, booking_status: form.booking_status }); setSampleKey('')
-      setNotice({ kind: 'success', title: 'Data berhasil disimpan', text: `Booking ${result.bookingId} ditambahkan. Total data sekarang ${Number(result.totalRows).toLocaleString('id-ID')} baris.` })
+      setNotice(refreshError
+        ? { kind: 'error', title: 'Data tersimpan, tampilan belum diperbarui', text: `Booking ${result.bookingId} ditambahkan. Namun sesi gagal diperbarui: ${refreshError}` }
+        : { kind: 'success', title: 'Data berhasil disimpan', text: `Booking ${result.bookingId} ditambahkan. Total data sekarang ${Number(result.totalRows).toLocaleString('id-ID')} baris.` })
     } catch (error) {
       setNotice({ kind: 'error', title: 'Data belum tersimpan', text: error instanceof Error ? error.message : 'Data gagal disimpan.' })
     } finally {
@@ -297,7 +418,7 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
     <div className="etl-content etl-wide">
       <div className="eyebrow">MANAJEMEN DATA <span>•</span> RUANG KERJA ETL</div>
       <h1>Pemuatan dataset</h1>
-      <p className="etl-lead">Unggah CSV untuk meninjau datanya. Setelah pemeriksaan berhasil, pilih Tambah Data (Import), Timpa Dataset, atau Input Manual.</p>
+      <p className="etl-lead">Unggah CSV untuk meninjau, menambah, atau menimpa data. Input Manual dapat digunakan langsung tanpa mengunggah CSV.</p>
 
       {/* LANGKAH 1 — UNGGAH DATASET */}
       <section className="step-card">
@@ -369,16 +490,17 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
       {/* LANGKAH 2 — PILIH TINDAKAN */}
       <section className="step-card" ref={stepTwoRef}>
         <div className="step-head"><span className="step-badge">2</span>
-          <div><h2>Lanjutkan ke</h2><p>{analysis?.headerOk ? 'Pilih tindakan setelah memeriksa pratinjau dataset.' : 'Unggah dan periksa dataset terlebih dahulu untuk membuka semua tindakan.'}</p></div></div>
+          <div><h2>Lanjutkan ke</h2><p>{analysis?.headerOk ? 'Pilih tindakan setelah memeriksa pratinjau dataset.' : 'Input Manual dapat digunakan langsung. Tambah Data dan Timpa Dataset akan meminta CSV baru.'}</p></div></div>
 
         <div className="method-tabs" role="tablist">
           {METHODS.map(item => {
             const reason = disabledReason(item.id)
+            const helper = !file && item.id !== 'manual' ? 'Pilih CSV untuk melanjutkan' : reason ?? item.desc
             return (
               <button key={item.id} role="tab" aria-selected={method === item.id} disabled={!!reason || busy}
                 className={`method-tab ${method === item.id ? 'active' : ''} ${reason ? 'is-disabled' : ''}`}
                 onClick={() => pickMethod(item.id)}>
-                <item.icon size={16} /><span><b>{item.title}{recommended === item.id && <i className="rec-badge">Disarankan</i>}</b><small>{reason ?? item.desc}</small></span>
+                <item.icon size={16} /><span><b>{item.title}{recommended === item.id && <i className="rec-badge">Disarankan</i>}</b><small>{helper}</small></span>
               </button>
             )
           })}
@@ -387,7 +509,7 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
         {analysis?.headerOk && analysis.dataRows > 0 && method !== 'manual' && (
           <div className="save-dashboard">
             <div>
-              <b>Simpan dataset untuk dashboard</b>
+              <b>Simpan dataset ke database</b>
               <p>{saveMode === 'replace'
                 ? 'Database masih kosong. Dataset ini akan disimpan sebagai dataset baru.'
                 : saveMode === 'append'
@@ -395,7 +517,7 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
                   : 'Tidak ada baris valid yang bisa disimpan otomatis. Pilih Timpa Dataset atau Input Manual.'}</p>
             </div>
             <Button onClick={() => runImport(saveMode ?? undefined, true)} disabled={busy || !saveMode}>
-              <Check size={16} /> {busy ? 'Menyimpan...' : 'Simpan & Buka Dashboard'}
+              <Check size={16} /> {busy ? 'Menyimpan...' : 'Simpan ke Database & Buka Dashboard'}
             </Button>
           </div>
         )}
@@ -404,7 +526,7 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
           <div className="az-confirm">
             <p>
               {method === 'replace'
-                ? <>Seluruh <b>{num(dbRows)}</b> baris lama akan dihapus dan diganti dengan <b>{num(analysis.dataRows)}</b> baris dari <b>{file.name}</b>.</>
+                ? <>Seluruh <b>{num(dbRows)}</b> baris lama akan dihapus dan diganti dengan hingga <b>{num(analysis.uniqueInFile)}</b> baris unik dari <b>{file.name}</b>.</>
                 : <><b>{num(analysis.newRows)}</b> baris baru akan ditambahkan ke <b>{num(dbRows)}</b> baris yang sudah ada.{analysis.alreadyInDatabase + analysis.duplicateInFile > 0 && <> Booking ID yang sudah ada dilewati.</>}</>}
             </p>
             <div className="etl-actions">
@@ -417,9 +539,9 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
         )}
 
         {method === 'manual' && (
-          <form className="manual-form" onSubmit={submitManual}>
+          <form className="manual-form" onSubmit={submitManual} noValidate>
             <h2>Input data pemesanan</h2>
-            <p>Kolom bertanda * wajib diisi sesuai status pemesanan.</p>
+            <p>Kolom bertanda * wajib diisi sesuai status pemesanan. CSV opsional untuk mengisi otomatis dari sampel.</p>
             {analysis?.headerOk && analysis.samples.length > 0 && (
               <label className="sample-picker">Isi otomatis dari berkas yang diunggah
                 <select value={sampleKey} onChange={e => fillFromSample(e.target.value)}>
@@ -481,13 +603,6 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
         )}
       </section>
 
-      {notice && (
-        <div className={`etl-result ${notice.kind === 'info' ? 'info' : notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>
-          <span>{notice.kind === 'error' ? <X size={17} /> : <Check size={17} />}</span>
-          <div><b>{notice.title}</b><p>{notice.text}</p></div>
-        </div>
-      )}
-
       <section className="panel table-panel etl-table">
         <div className="table-heading">
           <div><h3>Dataset tersimpan di database</h3>
@@ -501,17 +616,32 @@ export function EtlWorkspace({ onChanged, onOpenDashboard }: {
               <option value="asc">Urutan awal</option>
               <option value="desc">Terbaru dulu</option>
             </select>
+            <Button variant="danger" onClick={deleteSelectedRows} disabled={busy || selectedIds.size === 0}>
+              <Trash2 size={14} /> Hapus Dipilih ({num(selectedIds.size)})
+            </Button>
+            <Button variant="secondary" onClick={clearDatabase} disabled={busy || analyzing || dbRows === 0}>
+              <Trash2 size={14} /> Hapus Seluruh Dataset
+            </Button>
           </div>
         </div>
         {previewError && <div className="no-results">{previewError}</div>}
         <div className="table-wrap">
           <table>
             <thead><tr>
+              <th className="select-column">
+                <input className="row-select" type="checkbox" aria-label="Pilih semua baris di halaman ini"
+                  checked={!!preview?.rows.length && preview.rows.every(row => selectedIds.has(row.ride_id))}
+                  onChange={toggleCurrentPage} disabled={busy || !preview?.rows.length} />
+              </th>
               {['BOOKING ID', 'TANGGAL', 'WAKTU', 'STATUS', 'CUSTOMER ID', 'KENDARAAN', 'JEMPUT', 'TUJUAN', 'VTAT', 'CTAT', 'NILAI', 'JARAK', 'RATING DRV', 'RATING CUST', 'PEMBAYARAN'].map(h => <th key={h}>{h}</th>)}
             </tr></thead>
             <tbody>
               {preview?.rows.map(r => (
                 <tr key={r.ride_id}>
+                  <td className="select-cell">
+                    <input className="row-select" type="checkbox" aria-label={`Pilih booking ${r.booking_id}`}
+                      checked={selectedIds.has(r.ride_id)} onChange={() => toggleSelectedRow(r.ride_id)} disabled={busy} />
+                  </td>
                   <td className="booking-id">{r.booking_id}</td><td>{r.booking_date}</td><td>{fmt(r.booking_time)}</td>
                   <td>{r.booking_status}</td><td>{fmt(r.customer_id)}</td><td>{fmt(r.vehicle_type)}</td>
                   <td>{fmt(r.pickup_location)}</td><td>{fmt(r.drop_location)}</td>
